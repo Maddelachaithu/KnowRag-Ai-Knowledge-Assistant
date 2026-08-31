@@ -114,9 +114,16 @@ pip install -r requirements.txt
 Create a `.env` file in the project root:
 
 ```env
+# Required: Groq API Key
 GROQ_API_KEY=your_actual_groq_api_key_here
-GROQ_MODEL=groq/compound-mini
+
+# Optional: Model override (default is openai/gpt-oss-20b)
+GROQ_MODEL=openai/gpt-oss-20b
 ```
+
+> **Note on LLM Configuration:**
+> - The default model used by KnowRAG is `openai/gpt-oss-20b`.
+> - The `GROQ_MODEL` environment variable is **optional**. If provided, it overrides the default model with any other supported model available on your Groq account.
 
 > **Security Note:** The `.env` file contains secret credentials and must **never** be committed to version control. It is excluded by `.gitignore`.
 
