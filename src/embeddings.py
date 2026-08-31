@@ -53,7 +53,6 @@ def create_embedding_model(
     """
     embed_model = HuggingFaceEmbedding(
         model_name=model_name,
-        model_kwargs={"local_files_only": True},
     )
     return embed_model
 
