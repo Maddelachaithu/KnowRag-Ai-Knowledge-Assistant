@@ -7,9 +7,9 @@ pipeline for KnowRAG with strict factual source-grounding.
 Pipeline Flow:
 1. Receive natural language question.
 2. Retrieve top-k semantically relevant chunks from persistent ChromaDB vector store.
-3. Construct a strictly grounded context prompt.
+3. Construct a strictly grounded context prompt with document & page annotations.
 4. Generate an accurate, grounded answer using the Groq LLM.
-5. Parse and return structured output (answer, sources, retrieved_context).
+5. Parse and return structured output (answer, sources, source_details, retrieved_context).
 
 Author/Project: KnowRAG — AI-Powered Knowledge Assistant
 """
@@ -91,7 +91,7 @@ def create_rag_pipeline(
 
 def format_context_string(retrieved_nodes: List[NodeWithScore]) -> str:
     """
-    Format retrieved document nodes into a clean context string with source annotations.
+    Format retrieved document nodes into a clean context string with source and page annotations.
 
     Args:
         retrieved_nodes (List[NodeWithScore]): The list of retrieved chunk nodes.
@@ -105,9 +105,16 @@ def format_context_string(retrieved_nodes: List[NodeWithScore]) -> str:
     context_parts = []
     for idx, node_with_score in enumerate(retrieved_nodes, start=1):
         node = node_with_score.node
-        source_name = node.metadata.get("file_name", "Unknown Source")
+        source_name = node.metadata.get("file_name") or node.metadata.get("source") or "Unknown Source"
+        page_number = node.metadata.get("page_number")
+
+        if page_number:
+            header = f"[Document: {source_name} — Page {page_number}]"
+        else:
+            header = f"[Document: {source_name}]"
+
         text = node.get_content().strip()
-        context_parts.append(f"[Document: {source_name}]\n{text}")
+        context_parts.append(f"{header}\n{text}")
 
     return "\n\n".join(context_parts)
 
@@ -128,9 +135,9 @@ def parse_llm_response(
     """
     # Available valid filenames from retrieved context
     valid_sources = {
-        node_with_score.node.metadata.get("file_name")
+        node_with_score.node.metadata.get("file_name") or node_with_score.node.metadata.get("source")
         for node_with_score in retrieved_nodes
-        if node_with_score.node.metadata.get("file_name")
+        if node_with_score.node.metadata.get("file_name") or node_with_score.node.metadata.get("source")
     }
 
     raw_text = raw_response.strip()
@@ -146,7 +153,7 @@ def parse_llm_response(
         if "none" not in sources_str.lower():
             # Extract mentioned valid source filenames
             for fn in valid_sources:
-                if fn.lower() in sources_str.lower():
+                if fn and fn.lower() in sources_str.lower():
                     if fn not in sources:
                         sources.append(fn)
     else:
@@ -164,10 +171,54 @@ def parse_llm_response(
     elif not sources:
         # Fallback: if SOURCES_USED was omitted by LLM but answer was grounded,
         # assign primary retrieved source
-        if retrieved_nodes and retrieved_nodes[0].node.metadata.get("file_name"):
-            sources = [retrieved_nodes[0].node.metadata["file_name"]]
+        if retrieved_nodes:
+            primary_src = (
+                retrieved_nodes[0].node.metadata.get("file_name")
+                or retrieved_nodes[0].node.metadata.get("source")
+            )
+            if primary_src:
+                sources = [primary_src]
 
     return answer_text, sources
+
+
+def format_source_details(
+    sources: List[str],
+    retrieved_nodes: List[NodeWithScore],
+) -> List[str]:
+    """
+    Generate rich source citation labels with page numbers when available.
+
+    Args:
+        sources (List[str]): List of cited source filenames.
+        retrieved_nodes (List[NodeWithScore]): Retrieved chunk nodes.
+
+    Returns:
+        List[str]: Formatted source detail strings (e.g. 'hostel_rules.pdf — Page 2').
+    """
+    details: List[str] = []
+    seen = set()
+
+    for src in sources:
+        pages_found = []
+        for node_ws in retrieved_nodes:
+            node_src = node_ws.node.metadata.get("file_name") or node_ws.node.metadata.get("source")
+            if node_src == src:
+                page_num = node_ws.node.metadata.get("page_number")
+                if page_num and page_num not in pages_found:
+                    pages_found.append(page_num)
+
+        if pages_found:
+            pages_str = ", ".join(str(p) for p in sorted(pages_found))
+            label = f"{src} — Page {pages_str}"
+        else:
+            label = src
+
+        if label not in seen:
+            seen.add(label)
+            details.append(label)
+
+    return details
 
 
 def ask_question(
@@ -190,6 +241,7 @@ def ask_question(
             - 'question': Original question text.
             - 'answer': Generated answer string.
             - 'sources': List of unique verified source filenames.
+            - 'source_details': List of formatted source labels with page numbers.
             - 'retrieved_context': List of retrieved node dicts (text, score, file_name, metadata).
     """
     # 1. Ensure pipeline components are loaded
@@ -199,7 +251,7 @@ def ask_question(
     # 2. Semantic retrieval of top-k chunks
     retrieved_nodes = retrieve_documents(query=question, top_k=top_k, index=active_index)
 
-    # 3. Format context string with document annotations
+    # 3. Format context string with document and page annotations
     context_str = format_context_string(retrieved_nodes)
 
     # 4. Build structured prompt
@@ -212,13 +264,15 @@ def ask_question(
     # 5. Generate answer using Groq LLM
     response = active_llm.complete(prompt)
     answer_text, sources = parse_llm_response(response.text, retrieved_nodes)
+    source_details = format_source_details(sources, retrieved_nodes)
 
     # 6. Package retrieved context details for inspection and grounding verification
     retrieved_context_data = [
         {
             "text": node_with_score.node.get_content().strip(),
             "score": round(float(node_with_score.score), 4) if node_with_score.score is not None else None,
-            "file_name": node_with_score.node.metadata.get("file_name", "Unknown"),
+            "file_name": node_with_score.node.metadata.get("file_name") or node_with_score.node.metadata.get("source", "Unknown"),
+            "page_number": node_with_score.node.metadata.get("page_number"),
             "metadata": node_with_score.node.metadata,
         }
         for node_with_score in retrieved_nodes
@@ -228,6 +282,7 @@ def ask_question(
         "question": question,
         "answer": answer_text,
         "sources": sources,
+        "source_details": source_details,
         "retrieved_context": retrieved_context_data,
     }
 
@@ -262,18 +317,20 @@ if __name__ == "__main__":
         print("Retrieved Context Chunks:")
         for idx, chunk in enumerate(result["retrieved_context"], 1):
             fn = chunk["file_name"]
+            page = chunk.get("page_number")
+            page_info = f", page={page}" if page else ""
             score = chunk["score"]
             snippet = chunk["text"].replace("\n", " ")
             if len(snippet) > 160:
                 snippet = snippet[:160] + "..."
-            print(f"  [{idx}] ({fn}, score={score}): {snippet}")
+            print(f"  [{idx}] ({fn}{page_info}, score={score}): {snippet}")
 
         print("\nAnswer:")
         print(result["answer"])
 
         print("\nSources:")
-        if result["sources"]:
-            for src in result["sources"]:
+        if result["source_details"]:
+            for src in result["source_details"]:
                 print(f"- {src}")
         else:
             print("- None (Information unavailable in knowledge base)")

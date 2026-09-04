@@ -22,3 +22,7 @@ chroma_db/
 # OS
 .DS_Store
 Thumbs.db
+
+# User Uploaded Documents
+data/uploads/*
+!data/uploads/.gitkeep

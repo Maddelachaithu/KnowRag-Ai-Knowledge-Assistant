@@ -68,6 +68,7 @@ def load_environment() -> bool:
 def create_llm(
     model: Optional[str] = None,
     temperature: float = DEFAULT_TEMPERATURE,
+    api_key: Optional[str] = None,
     **kwargs,
 ) -> Groq:
     """
@@ -77,6 +78,7 @@ def create_llm(
         model (Optional[str]): The model identifier on Groq. If not provided,
             checks GROQ_MODEL environment variable, then defaults to 'openai/gpt-oss-20b'.
         temperature (float): Sampling temperature (0.0 to 1.0). Default is 0.1.
+        api_key (Optional[str]): Explicit API key. If None, loaded securely from environment.
         **kwargs: Additional keyword arguments forwarded to the Groq constructor.
 
     Returns:
@@ -85,20 +87,23 @@ def create_llm(
     Raises:
         ValueError: If GROQ_API_KEY is missing or empty.
     """
-    # Ensure environment is loaded
-    is_key_present = load_environment()
-    if not is_key_present:
+    # Use explicit API key if passed, else load from environment
+    key_to_use = api_key
+    if key_to_use is None:
+        load_environment()
+        key_to_use = os.getenv("GROQ_API_KEY")
+
+    if not key_to_use or len(key_to_use.strip()) == 0:
         raise ValueError(
             "GROQ_API_KEY environment variable is not set. "
             "Please add 'GROQ_API_KEY=gsk_...' to your .env file."
         )
 
-    api_key = os.getenv("GROQ_API_KEY")
     selected_model = model or os.getenv("GROQ_MODEL", DEFAULT_MODEL)
 
     llm = Groq(
         model=selected_model,
-        api_key=api_key,
+        api_key=key_to_use,
         temperature=temperature,
         **kwargs,
     )
